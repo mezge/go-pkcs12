@@ -11,6 +11,8 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"fmt"
+	"os"
 	"testing"
 )
 
@@ -113,6 +115,45 @@ func TestEncoder_EncodeWithoutFriendlyName(t *testing.T) {
 				t.Fatalf("Friendly name not expected but got %s", p.Headers["friendlyName"])
 			}
 		}
+	}
+}
+
+func TestEncoder_Builder(t *testing.T) {
+	builder := Modern.NewBuilder()
+	for commonName, base64P12 := range testdata {
+		p12, _ := base64.StdEncoding.DecodeString(base64P12)
+
+		key, certificate, certs, err := DecodeChain(p12, "")
+		if err != nil {
+			t.Fatalf("error while reading: %s", err)
+		}
+
+		builder.AddPrivateKey(&KeyStoreEntry{
+			Cert:         certificate,
+			PrivateKey:   key,
+			CACerts:      certs,
+			FriendlyName: commonName,
+		})
+	}
+	p12, err := builder.Build("password")
+	if err != nil {
+		t.Fatalf("error while building: %v", err)
+	}
+	temp, err := os.CreateTemp("", "test_*.p12")
+	if err != nil {
+		t.Fatalf("error creating temp file: %v", err)
+	}
+	fmt.Printf("Created file: %s\n", temp.Name())
+	if _, err = temp.Write(p12); err != nil {
+		t.Fatalf("error writing temp file: %v", err)
+	}
+
+	entries, err := DecodeEntries(p12, "password")
+	if err != nil {
+		t.Fatalf("error while reading: %v", err)
+	}
+	if len(entries) != len(testdata) {
+		t.Fatalf("expected %d entries, got %d", len(testdata), len(entries))
 	}
 }
 

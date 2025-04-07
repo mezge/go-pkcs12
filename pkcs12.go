@@ -370,6 +370,8 @@ func convertAttribute(attribute *pkcs12Attribute) (key, value string, err error)
 		// This key is chosen to match OpenSSL.
 		key = "Microsoft CSP Name"
 		isString = true
+	case attribute.Id.Equal(oidJavaTrustStore):
+		return "Java TrustStore", "true", nil
 	default:
 		return "", "", errors.New("pkcs12: unknown attribute with OID " + attribute.Id.String())
 	}
@@ -653,10 +655,21 @@ func (enc *Encoder) EncodeWithFriendlyName(friendlyName string, privateKey inter
 		return nil, err
 	}
 
-	var pfx pfxPdu
-	pfx.Version = 3
+	authenticatedSafe, err := enc.makeKeyBags(KeyStoreEntry{
+		Cert:         certificate,
+		PrivateKey:   privateKey,
+		CACerts:      caCerts,
+		FriendlyName: friendlyName,
+	}, encodedPassword)
+	if err != nil {
+		return nil, err
+	}
 
-	var certFingerprint = sha1.Sum(certificate.Raw)
+	return enc.encodeSafeBags(authenticatedSafe[:], encodedPassword)
+}
+
+func (enc *Encoder) makeKeyBags(kse KeyStoreEntry, encodedPassword []byte) (authenticatedSafe []contentInfo, err error) {
+	var certFingerprint = sha1.Sum(kse.Cert.Raw)
 	var localKeyIdAttr pkcs12Attribute
 	localKeyIdAttr.Id = oidLocalKeyID
 	localKeyIdAttr.Value.Class = 0
@@ -667,42 +680,22 @@ func (enc *Encoder) EncodeWithFriendlyName(friendlyName string, privateKey inter
 	}
 	pkcs12Attributes := []pkcs12Attribute{localKeyIdAttr}
 
-	if len(friendlyName) != 0 {
-		bmpFriendlyName, err := bmpString(friendlyName)
+	if len(kse.FriendlyName) != 0 {
+		friendlyNameAttr, err := makeFriendlyNameAttribute(kse.FriendlyName)
 		if err != nil {
 			return nil, err
 		}
-
-		encodedFriendlyName, err := asn1.Marshal(asn1.RawValue{
-			Class:      0,
-			Tag:        30,
-			IsCompound: false,
-			Bytes:      bmpFriendlyName,
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		friendlyNameAttr := pkcs12Attribute{
-			Id: oidFriendlyName,
-			Value: asn1.RawValue{
-				Class:      0,
-				Tag:        17,
-				IsCompound: true,
-				Bytes:      encodedFriendlyName,
-			},
-		}
-		pkcs12Attributes = append(pkcs12Attributes, friendlyNameAttr)
+		pkcs12Attributes = append(pkcs12Attributes, *friendlyNameAttr)
 	}
 
 	var certBags []safeBag
-	if certBag, err := makeCertBag(certificate.Raw, pkcs12Attributes); err != nil {
+	if certBag, err := makeCertBag(kse.Cert.Raw, pkcs12Attributes); err != nil {
 		return nil, err
 	} else {
 		certBags = append(certBags, *certBag)
 	}
 
-	for _, cert := range caCerts {
+	for _, cert := range kse.CACerts {
 		if certBag, err := makeCertBag(cert.Raw, []pkcs12Attribute{}); err != nil {
 			return nil, err
 		} else {
@@ -716,7 +709,7 @@ func (enc *Encoder) EncodeWithFriendlyName(friendlyName string, privateKey inter
 		keyBag.Value.Class = 2
 		keyBag.Value.Tag = 0
 		keyBag.Value.IsCompound = true
-		if keyBag.Value.Bytes, err = x509.MarshalPKCS8PrivateKey(privateKey); err != nil {
+		if keyBag.Value.Bytes, err = x509.MarshalPKCS8PrivateKey(kse.PrivateKey); err != nil {
 			return nil, err
 		}
 	} else {
@@ -724,7 +717,7 @@ func (enc *Encoder) EncodeWithFriendlyName(friendlyName string, privateKey inter
 		keyBag.Value.Class = 2
 		keyBag.Value.Tag = 0
 		keyBag.Value.IsCompound = true
-		if keyBag.Value.Bytes, err = encodePkcs8ShroudedKeyBag(enc.rand, privateKey, enc.keyAlgorithm, encodedPassword, enc.encryptionIterations, enc.saltLen); err != nil {
+		if keyBag.Value.Bytes, err = encodePkcs8ShroudedKeyBag(enc.rand, kse.PrivateKey, enc.keyAlgorithm, encodedPassword, enc.encryptionIterations, enc.saltLen); err != nil {
 			return nil, err
 		}
 	}
@@ -733,16 +726,50 @@ func (enc *Encoder) EncodeWithFriendlyName(friendlyName string, privateKey inter
 	// Construct an authenticated safe with two SafeContents.
 	// The first SafeContents is encrypted and contains the cert bags.
 	// The second SafeContents is unencrypted and contains the shrouded key bag.
-	var authenticatedSafe [2]contentInfo
+	authenticatedSafe = make([]contentInfo, 2)
 	if authenticatedSafe[0], err = makeSafeContents(enc.rand, certBags, enc.certAlgorithm, encodedPassword, enc.encryptionIterations, enc.saltLen); err != nil {
 		return nil, err
 	}
 	if authenticatedSafe[1], err = makeSafeContents(enc.rand, []safeBag{keyBag}, nil, nil, 0, 0); err != nil {
 		return nil, err
 	}
+	return
+}
+
+func makeFriendlyNameAttribute(friendlyName string) (*pkcs12Attribute, error) {
+	bmpFriendlyName, err := bmpString(friendlyName)
+	if err != nil {
+		return nil, err
+	}
+
+	encodedFriendlyName, err := asn1.Marshal(asn1.RawValue{
+		Class:      0,
+		Tag:        30,
+		IsCompound: false,
+		Bytes:      bmpFriendlyName,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	friendlyNameAttr := pkcs12Attribute{
+		Id: oidFriendlyName,
+		Value: asn1.RawValue{
+			Class:      0,
+			Tag:        17,
+			IsCompound: true,
+			Bytes:      encodedFriendlyName,
+		},
+	}
+	return &friendlyNameAttr, nil
+}
+
+func (enc *Encoder) encodeSafeBags(authenticatedSafe []contentInfo, encodedPassword []byte) (pfxData []byte, err error) {
+	var pfx pfxPdu
+	pfx.Version = 3
 
 	var authenticatedSafeBytes []byte
-	if authenticatedSafeBytes, err = asn1.Marshal(authenticatedSafe[:]); err != nil {
+	if authenticatedSafeBytes, err = asn1.Marshal(authenticatedSafe); err != nil {
 		return nil, err
 	}
 
@@ -811,6 +838,14 @@ type TrustStoreEntry struct {
 	FriendlyName string
 }
 
+// KeyStoreEntry represents an entry in a Java KeyStore.
+type KeyStoreEntry struct {
+	Cert         *x509.Certificate
+	PrivateKey   interface{}
+	CACerts      []*x509.Certificate
+	FriendlyName string
+}
+
 // EncodeTrustStoreEntries is equivalent to LegacyRC2.WithRand(rand).EncodeTrustStoreEntries.
 // See [Encoder.EncodeTrustStoreEntries] and [LegacyRC2] for details.
 //
@@ -844,57 +879,32 @@ func (enc *Encoder) EncodeTrustStoreEntries(entries []TrustStoreEntry, password 
 		return nil, err
 	}
 
-	var pfx pfxPdu
-	pfx.Version = 3
+	authenticatedSafe, err2 := enc.makeTrustBags(entries, encodedPassword)
+	if err2 != nil {
+		return nil, err2
+	}
 
-	var certAttributes []pkcs12Attribute
+	return enc.encodeSafeBags(authenticatedSafe[:], encodedPassword)
+}
 
-	extKeyUsageOidBytes, err := asn1.Marshal(oidAnyExtendedKeyUsage)
+func (enc *Encoder) makeTrustBags(entries []TrustStoreEntry, encodedPassword []byte) (authenticatedSafe []contentInfo, err error) {
+	attribute, err := makeJavaTrustStoreAttribute()
 	if err != nil {
 		return nil, err
 	}
 
-	// the oidJavaTrustStore attribute contains the EKUs for which
-	// this trust anchor will be valid
-	certAttributes = append(certAttributes, pkcs12Attribute{
-		Id: oidJavaTrustStore,
-		Value: asn1.RawValue{
-			Class:      0,
-			Tag:        17,
-			IsCompound: true,
-			Bytes:      extKeyUsageOidBytes,
-		},
-	})
+	var certAttributes []pkcs12Attribute
+	certAttributes = append(certAttributes, *attribute)
 
 	var certBags []safeBag
 	for _, entry := range entries {
 
-		bmpFriendlyName, err := bmpString(entry.FriendlyName)
+		friendlyName, err := makeFriendlyNameAttribute(entry.FriendlyName)
 		if err != nil {
 			return nil, err
 		}
 
-		encodedFriendlyName, err := asn1.Marshal(asn1.RawValue{
-			Class:      0,
-			Tag:        30,
-			IsCompound: false,
-			Bytes:      bmpFriendlyName,
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		friendlyName := pkcs12Attribute{
-			Id: oidFriendlyName,
-			Value: asn1.RawValue{
-				Class:      0,
-				Tag:        17,
-				IsCompound: true,
-				Bytes:      encodedFriendlyName,
-			},
-		}
-
-		certBag, err := makeCertBag(entry.Cert.Raw, append(certAttributes, friendlyName))
+		certBag, err := makeCertBag(entry.Cert.Raw, append(certAttributes, *friendlyName))
 		if err != nil {
 			return nil, err
 		}
@@ -902,42 +912,32 @@ func (enc *Encoder) EncodeTrustStoreEntries(entries []TrustStoreEntry, password 
 	}
 
 	// Construct an authenticated safe with one SafeContent.
-	// The SafeContents is contains the cert bags.
-	var authenticatedSafe [1]contentInfo
+	// The SafeContents contains the cert bags.
+	authenticatedSafe = make([]contentInfo, 1)
 	if authenticatedSafe[0], err = makeSafeContents(enc.rand, certBags, enc.certAlgorithm, encodedPassword, enc.encryptionIterations, enc.saltLen); err != nil {
 		return nil, err
 	}
+	return authenticatedSafe, nil
+}
 
-	var authenticatedSafeBytes []byte
-	if authenticatedSafeBytes, err = asn1.Marshal(authenticatedSafe[:]); err != nil {
+func makeJavaTrustStoreAttribute() (*pkcs12Attribute, error) {
+	extKeyUsageOidBytes, err := asn1.Marshal(oidAnyExtendedKeyUsage)
+	if err != nil {
 		return nil, err
 	}
 
-	if enc.macAlgorithm != nil {
-		// compute the MAC
-		pfx.MacData.Mac.Algorithm.Algorithm = enc.macAlgorithm
-		pfx.MacData.MacSalt = make([]byte, enc.saltLen)
-		if _, err = enc.rand.Read(pfx.MacData.MacSalt); err != nil {
-			return nil, err
-		}
-		pfx.MacData.Iterations = enc.macIterations
-		if err = computeMac(&pfx.MacData, authenticatedSafeBytes, encodedPassword); err != nil {
-			return nil, err
-		}
+	// the oidJavaTrustStore attribute contains the EKUs for which
+	// this trust anchor will be valid
+	attribute := pkcs12Attribute{
+		Id: oidJavaTrustStore,
+		Value: asn1.RawValue{
+			Class:      0,
+			Tag:        17,
+			IsCompound: true,
+			Bytes:      extKeyUsageOidBytes,
+		},
 	}
-
-	pfx.AuthSafe.ContentType = oidDataContentType
-	pfx.AuthSafe.Content.Class = 2
-	pfx.AuthSafe.Content.Tag = 0
-	pfx.AuthSafe.Content.IsCompound = true
-	if pfx.AuthSafe.Content.Bytes, err = asn1.Marshal(authenticatedSafeBytes); err != nil {
-		return nil, err
-	}
-
-	if pfxData, err = asn1.Marshal(pfx); err != nil {
-		return nil, errors.New("pkcs12: error writing P12 data: " + err.Error())
-	}
-	return
+	return &attribute, nil
 }
 
 func makeCertBag(certBytes []byte, attributes []pkcs12Attribute) (certBag *safeBag, err error) {
@@ -1002,4 +1002,104 @@ func makeSafeContents(rand io.Reader, bags []safeBag, algoID asn1.ObjectIdentifi
 		}
 	}
 	return
+}
+
+// DecodeEntries extracts all keys and trusted certificates (certificates with attribute 2.16.840.1.113894.746875.1.1) entries
+// from pfxData, which must be a DER-encoded PKCS#12 file.
+//
+// The result array can contain only *TrustStoreEntry or *KeyStoreEntry.
+//
+// If the password argument is empty, DecodeEntries will decode either password-less
+// PKCS#12 files (i.e. those without encryption) or files with a literal empty password.
+func DecodeEntries(pfxData []byte, password string) ([]any, error) {
+	encodedPassword, err := bmpStringZeroTerminated(password)
+	if err != nil {
+		return nil, ErrIncorrectPassword
+	}
+
+	entries := make([]any, 0, 10)
+	bags, encodedPassword, err := getSafeContents(pfxData, encodedPassword, 1, 6)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make(map[string]*KeyStoreEntry, 10)
+	var lastKey *KeyStoreEntry
+	for _, bag := range bags {
+		localKeyId := ""
+		friendlyName := ""
+		for _, attribute := range bag.Attributes {
+			k, v, err := convertAttribute(&attribute)
+			if err != nil {
+				return nil, err
+			}
+			if k == "localKeyId" {
+				localKeyId = v
+			} else if k == "friendlyName" {
+				friendlyName = v
+			}
+		}
+
+		if localKeyId != "" && keys[localKeyId] == nil {
+			lastKey = &KeyStoreEntry{
+				FriendlyName: friendlyName,
+			}
+			keys[localKeyId] = lastKey
+			entries = append(entries, lastKey)
+		} else if localKeyId != "" {
+			lastKey = keys[localKeyId]
+		}
+
+		switch {
+		case bag.Id.Equal(oidCertBag):
+			certsData, err := decodeCertBag(bag.Value.Bytes)
+			if err != nil {
+				return nil, err
+			}
+			certs, err := x509.ParseCertificates(certsData)
+			if err != nil {
+				return nil, err
+			}
+			if len(certs) != 1 {
+				err = errors.New("pkcs12: expected exactly one certificate in the certBag")
+				return nil, err
+			}
+			if bag.hasAttribute(oidJavaTrustStore) {
+				entries = append(entries, &TrustStoreEntry{
+					Cert:         certs[0],
+					FriendlyName: friendlyName,
+				})
+			} else if lastKey != nil {
+				if lastKey.Cert == nil {
+					lastKey.Cert = certs[0]
+				} else {
+					lastKey.CACerts = append(lastKey.CACerts, certs[0])
+				}
+			}
+
+		case bag.Id.Equal(oidKeyBag):
+			if localKeyId == "" {
+				return nil, errors.New("pkcs12: private key has no localKeyId")
+			}
+
+			if privateKey, err := x509.ParsePKCS8PrivateKey(bag.Value.Bytes); err != nil {
+				return nil, err
+			} else {
+				lastKey.PrivateKey = privateKey
+			}
+
+		case bag.Id.Equal(oidPKCS8ShroundedKeyBag):
+			if localKeyId == "" {
+				return nil, errors.New("pkcs12: private key has no localKeyId")
+			}
+
+			if privateKey, err := decodePkcs8ShroudedKeyBag(bag.Value.Bytes, encodedPassword); err != nil {
+				return nil, err
+			} else {
+				lastKey.PrivateKey = privateKey
+			}
+		}
+	}
+
+	return entries, nil
 }
