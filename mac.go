@@ -39,6 +39,27 @@ type pbmac1Params struct {
 	MacAlg pkix.AlgorithmIdentifier
 }
 
+func makePBMAC1Parameters(salt []byte, iterations int) ([]byte, error) {
+	var err error
+
+	var kdfparams pbkdf2Params
+	if kdfparams.Salt.FullBytes, err = asn1.Marshal(salt); err != nil {
+		return nil, err
+	}
+	kdfparams.Iterations = iterations
+	kdfparams.KeyLength = 32
+	kdfparams.Prf.Algorithm = oidHmacWithSHA256
+
+	var params pbmac1Params
+	params.Kdf.Algorithm = oidPBKDF2
+	if params.Kdf.Parameters.FullBytes, err = asn1.Marshal(kdfparams); err != nil {
+		return nil, err
+	}
+	params.MacAlg.Algorithm = oidHmacWithSHA256
+
+	return asn1.Marshal(params)
+}
+
 var (
 	oidSHA1   = asn1.ObjectIdentifier([]int{1, 3, 14, 3, 2, 26})
 	oidSHA256 = asn1.ObjectIdentifier([]int{2, 16, 840, 1, 101, 3, 4, 2, 1})
