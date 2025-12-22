@@ -165,6 +165,33 @@ var Modern2023 = &Encoder{
 	rand:                 rand.Reader,
 }
 
+// Modern2026 encodes PKCS#12 files using algorithms that are considered modern
+// as of 2026.  Private keys and certificates are encrypted using PBES2 with
+// PBKDF2-HMAC-SHA-256 and AES-256-CBC.  The MAC algorithm is PBMAC1 with
+// PBKDF2-HMAC-SHA-256 and HMAC-SHA256.
+//
+// Files produced with this encoder can be read by OpenSSL 3.4.0 and higher and
+// Java 26 and higher.
+//
+// For passwords, it is RECOMMENDED that you do one of the following:
+// 1) Use [DefaultPassword] and protect the file using other means, or
+// 2) Use a high-entropy password, such as one generated with `openssl rand -hex 16`.
+//
+// You SHOULD NOT use a lower-entropy password with this encoder because the number of KDF
+// iterations is only 2048 and doesn't provide meaningful protection against
+// brute-forcing.  You can increase the number of iterations using [Encoder.WithIterations],
+// but as https://neilmadden.blog/2023/01/09/on-pbkdf2-iterations/ explains, this doesn't
+// help as much as you think.
+var Modern2026 = &Encoder{
+	macAlgorithm:         oidPBMAC1,
+	certAlgorithm:        oidPBES2,
+	keyAlgorithm:         oidPBES2,
+	macIterations:        2048,
+	encryptionIterations: 2048,
+	saltLen:              16,
+	rand:                 rand.Reader,
+}
+
 // Legacy encodes PKCS#12 files using weak, legacy parameters that work in
 // a wide variety of software.
 //
