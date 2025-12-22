@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"fmt"
 	"hash"
 
 	"golang.org/x/crypto/pbkdf2"
@@ -52,7 +53,7 @@ var (
 func doPBMAC1(algorithm pkix.AlgorithmIdentifier, message, password []byte) ([]byte, error) {
 	var params pbmac1Params
 	if err := unmarshal(algorithm.Parameters.FullBytes, &params); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error decoding PBMAC1 parameters: %w", err)
 	}
 
 	// Only PBKDF2 is supported as KDF
