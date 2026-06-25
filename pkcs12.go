@@ -961,16 +961,33 @@ func makeJavaTrustStoreAttribute() (*pkcs12Attribute, error) {
 		return nil, err
 	}
 
-	// the oidJavaTrustStore attribute contains the EKUs for which
-	// this trust anchor will be valid
-	attribute := pkcs12Attribute{
-		Id: oidJavaTrustStore,
-		Value: asn1.RawValue{
-			Class:      0,
-			Tag:        17,
-			IsCompound: true,
-			Bytes:      extKeyUsageOidBytes,
-		},
+	if enc.macAlgorithm != nil {
+		macSalt := make([]byte, enc.saltLen)
+		if _, err = enc.rand.Read(macSalt); err != nil {
+			return nil, err
+		}
+		pfx.MacData.Mac.Algorithm.Algorithm = enc.macAlgorithm
+		if enc.macAlgorithm.Equal(oidPBMAC1) {
+			var err error
+			pfx.MacData.Mac.Algorithm.Parameters.FullBytes, err = makePBMAC1Parameters(macSalt, enc.macIterations)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			pfx.MacData.MacSalt = macSalt
+			pfx.MacData.Iterations = enc.macIterations
+		}
+		if err = computeMac(&pfx.MacData, authenticatedSafeBytes, encodedPassword); err != nil {
+			return nil, err
+		}
+	}
+
+	pfx.AuthSafe.ContentType = oidDataContentType
+	pfx.AuthSafe.Content.Class = 2
+	pfx.AuthSafe.Content.Tag = 0
+	pfx.AuthSafe.Content.IsCompound = true
+	if pfx.AuthSafe.Content.Bytes, err = asn1.Marshal(authenticatedSafeBytes); err != nil {
+		return nil, err
 	}
 	return &attribute, nil
 }
