@@ -914,12 +914,108 @@ func (enc *Encoder) EncodeTrustStoreEntries(entries []TrustStoreEntry, password 
 		return nil, err
 	}
 
-	authenticatedSafe, err2 := enc.makeTrustBags(entries, encodedPassword)
-	if err2 != nil {
-		return nil, err2
+	var pfx pfxPdu
+	pfx.Version = 3
+
+	var certAttributes []pkcs12Attribute
+
+	extKeyUsageOidBytes, err := asn1.Marshal(oidAnyExtendedKeyUsage)
+	if err != nil {
+		return nil, err
 	}
 
-	return enc.encodeSafeBags(authenticatedSafe[:], encodedPassword)
+	// the oidJavaTrustStore attribute contains the EKUs for which
+	// this trust anchor will be valid
+	certAttributes = append(certAttributes, pkcs12Attribute{
+		Id: oidJavaTrustStore,
+		Value: asn1.RawValue{
+			Class:      0,
+			Tag:        17,
+			IsCompound: true,
+			Bytes:      extKeyUsageOidBytes,
+		},
+	})
+
+	var certBags []safeBag
+	for _, entry := range entries {
+
+		bmpFriendlyName, err := bmpString(entry.FriendlyName)
+		if err != nil {
+			return nil, err
+		}
+
+		encodedFriendlyName, err := asn1.Marshal(asn1.RawValue{
+			Class:      0,
+			Tag:        30,
+			IsCompound: false,
+			Bytes:      bmpFriendlyName,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		friendlyName := pkcs12Attribute{
+			Id: oidFriendlyName,
+			Value: asn1.RawValue{
+				Class:      0,
+				Tag:        17,
+				IsCompound: true,
+				Bytes:      encodedFriendlyName,
+			},
+		}
+
+		certBag, err := makeCertBag(entry.Cert.Raw, append(certAttributes, friendlyName))
+		if err != nil {
+			return nil, err
+		}
+		certBags = append(certBags, *certBag)
+	}
+
+	// Construct an authenticated safe with one SafeContent.
+	// The SafeContents is contains the cert bags.
+	var authenticatedSafe [1]contentInfo
+	if authenticatedSafe[0], err = makeSafeContents(enc.rand, certBags, enc.certAlgorithm, encodedPassword, enc.encryptionIterations, enc.saltLen); err != nil {
+		return nil, err
+	}
+
+	var authenticatedSafeBytes []byte
+	if authenticatedSafeBytes, err = asn1.Marshal(authenticatedSafe[:]); err != nil {
+		return nil, err
+	}
+
+	if enc.macAlgorithm != nil {
+		macSalt := make([]byte, enc.saltLen)
+		if _, err = enc.rand.Read(macSalt); err != nil {
+			return nil, err
+		}
+		pfx.MacData.Mac.Algorithm.Algorithm = enc.macAlgorithm
+		if enc.macAlgorithm.Equal(oidPBMAC1) {
+			var err error
+			pfx.MacData.Mac.Algorithm.Parameters.FullBytes, err = makePBMAC1Parameters(macSalt, enc.macIterations)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			pfx.MacData.MacSalt = macSalt
+			pfx.MacData.Iterations = enc.macIterations
+		}
+		if err = computeMac(&pfx.MacData, authenticatedSafeBytes, encodedPassword); err != nil {
+			return nil, err
+		}
+	}
+
+	pfx.AuthSafe.ContentType = oidDataContentType
+	pfx.AuthSafe.Content.Class = 2
+	pfx.AuthSafe.Content.Tag = 0
+	pfx.AuthSafe.Content.IsCompound = true
+	if pfx.AuthSafe.Content.Bytes, err = asn1.Marshal(authenticatedSafeBytes); err != nil {
+		return nil, err
+	}
+
+	if pfxData, err = asn1.Marshal(pfx); err != nil {
+		return nil, errors.New("pkcs12: error writing P12 data: " + err.Error())
+	}
+	return
 }
 
 func (enc *Encoder) makeTrustBags(entries []TrustStoreEntry, encodedPassword []byte) (authenticatedSafe []contentInfo, err error) {
@@ -961,33 +1057,16 @@ func makeJavaTrustStoreAttribute() (*pkcs12Attribute, error) {
 		return nil, err
 	}
 
-	if enc.macAlgorithm != nil {
-		macSalt := make([]byte, enc.saltLen)
-		if _, err = enc.rand.Read(macSalt); err != nil {
-			return nil, err
-		}
-		pfx.MacData.Mac.Algorithm.Algorithm = enc.macAlgorithm
-		if enc.macAlgorithm.Equal(oidPBMAC1) {
-			var err error
-			pfx.MacData.Mac.Algorithm.Parameters.FullBytes, err = makePBMAC1Parameters(macSalt, enc.macIterations)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			pfx.MacData.MacSalt = macSalt
-			pfx.MacData.Iterations = enc.macIterations
-		}
-		if err = computeMac(&pfx.MacData, authenticatedSafeBytes, encodedPassword); err != nil {
-			return nil, err
-		}
-	}
-
-	pfx.AuthSafe.ContentType = oidDataContentType
-	pfx.AuthSafe.Content.Class = 2
-	pfx.AuthSafe.Content.Tag = 0
-	pfx.AuthSafe.Content.IsCompound = true
-	if pfx.AuthSafe.Content.Bytes, err = asn1.Marshal(authenticatedSafeBytes); err != nil {
-		return nil, err
+	// the oidJavaTrustStore attribute contains the EKUs for which
+	// this trust anchor will be valid
+	attribute := pkcs12Attribute{
+		Id: oidJavaTrustStore,
+		Value: asn1.RawValue{
+			Class:      0,
+			Tag:        17,
+			IsCompound: true,
+			Bytes:      extKeyUsageOidBytes,
+		},
 	}
 	return &attribute, nil
 }
