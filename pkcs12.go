@@ -400,7 +400,7 @@ func convertAttribute(attribute *pkcs12Attribute) (key, value string, err error)
 	case attribute.Id.Equal(oidJavaTrustStore):
 		return "Java TrustStore", "true", nil
 	default:
-		return "", "", errors.New("pkcs12: unknown attribute with OID " + attribute.Id.String())
+		return "", "", nil
 	}
 
 	if isString {

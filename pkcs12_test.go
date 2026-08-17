@@ -157,6 +157,20 @@ func TestEncoder_Builder(t *testing.T) {
 	}
 }
 
+func TestDecode_WithUnknownAttribute(t *testing.T) {
+	bytes, err := os.ReadFile("testdata/p12_with_unknown_attribute.pfx")
+	if err != nil {
+		t.Fatalf("error reading file: %v", err)
+	}
+	entries, err := DecodeEntries(bytes, "Passw0rd")
+	if err != nil {
+		t.Fatalf("error while reading: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+}
+
 func TestTrustStore(t *testing.T) {
 	for commonName, base64P12 := range testdata {
 		p12, _ := base64.StdEncoding.DecodeString(base64P12)
