@@ -1,7 +1,7 @@
 module software.sslmate.com/src/go-pkcs12
 
-go 1.23.0
+go 1.26.0
 
-toolchain go1.24.1
+toolchain go1.26.6
 
-require golang.org/x/crypto v0.36.0 // indirect
+require golang.org/x/crypto v0.55.0
