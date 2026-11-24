@@ -1149,7 +1149,7 @@ func DecodeEntries(pfxData []byte, password string) ([]any, error) {
 	}
 
 	entries := make([]any, 0, 10)
-	bags, encodedPassword, err := getSafeContents(pfxData, encodedPassword, 1, 6)
+	bags, encodedPassword, err := getSafeContents(pfxData, encodedPassword, 1, 10)
 	if err != nil {
 		return nil, err
 	}
